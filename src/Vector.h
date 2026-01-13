@@ -6,6 +6,8 @@
 #include <stdexcept> // std::out_of_range
 #include <type_traits> // std::is_same
 #include <iostream> // for testing
+#include <shared_mutex> // for thread locking
+#include <functional>
 
 template <class T>
 class Vector {
@@ -14,8 +16,9 @@ public:
 private:
     T* array;
     size_t _capacity, _size;
+    mutable std::shared_mutex mtx; // this is our traffic controller
 
-    // You may want to write a function that grows the vector
+    // doubles the vector capacity when we need more capacity
     void grow() {
         this->_capacity = this->_capacity == 0 ? 1 : this->_capacity * 2;
         T* newArray = new T[this->_capacity];
@@ -52,6 +55,7 @@ public:
 
     // ================== PUBLIC ==================
     Vector& operator=(const Vector& other) { // copy assignment
+        std::unique_lock<std::shared_mutex> lock(mtx);
         if (this != &other) {
             delete[] this->array;
             _size = other.size();
@@ -62,6 +66,7 @@ public:
         return *this;
     }
     Vector& operator=(Vector&& other) noexcept { // move assignment
+        std::unique_lock<std::shared_mutex> lock(mtx);
         if (this != &other) {
             delete[] this->array;
             _size = other.size();
@@ -74,49 +79,84 @@ public:
         return *this;
     }
 
-    iterator begin() noexcept {return iterator(this->array);}
-    iterator end() noexcept {return iterator(this->array + this->_size);}
+    iterator begin() noexcept {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return iterator(this->array);
+    }
+    iterator end() noexcept {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return iterator(this->array + this->_size);
+    }
 
-    [[nodiscard]] bool empty() const noexcept {return _size == 0;}
-    size_t size() const noexcept {return this->_size;}
-    size_t capacity() const noexcept {return this->_capacity;}
+    [[nodiscard]] bool empty() const noexcept {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return _size == 0;
+    }
+    size_t size() const noexcept {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->_size;
+    }
+    size_t capacity() const noexcept {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->_capacity;
+    }
 
     T& at(size_t pos) {
+        std::shared_lock<std::shared_mutex> lock(mtx);
         if (pos >= this->_size) throw std::out_of_range("Out of bounds");
         return this->array[pos];
     }
     const T& at(size_t pos) const {
+        std::shared_lock<std::shared_mutex> lock(mtx);
         if (pos >= this->_size) throw std::out_of_range("Out of bounds");
         return this->array[pos];
     }
     T& operator[](size_t pos) {
+        std::shared_lock<std::shared_mutex> lock(mtx);
         if (pos >= this->_size) throw std::out_of_range("Out of bounds");
         return this->array[pos];
     }
     const T& operator[](size_t pos) const {
+        std::shared_lock<std::shared_mutex> lock(mtx);
         if (pos >= this->_size) throw std::out_of_range("Out of bounds");
         return this->array[pos];
     }
-    T& front() {return this->array[0];}
-    const T& front() const {return this->array[0];}
-    T& back() {return this->array[this->_size - 1];}
-    const T& back() const {return this->array[this->_size - 1];}
+    T& front() {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->array[0];
+    }
+    const T& front() const {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->array[0];
+    }
+    T& back() {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->array[this->_size - 1];
+    }
+    const T& back() const {
+        std::shared_lock<std::shared_mutex> lock(mtx);
+        return this->array[this->_size - 1];
+    }
 
     void push_back(const T& value) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
         if (this->_size == this->_capacity) this->grow();
         this->array[this->_size] = value;
         this->_size++;
     }
     void push_back(T&& value) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
         if (this->_size == this->_capacity) this->grow();
         this->array[this->_size] = std::move(value);
         this->_size++;
     }
     void pop_back() {
+        std::unique_lock<std::shared_mutex> lock(mtx);
         this->_size--;
     }
 
     iterator insert(iterator pos, const T& value) { // insert
+        std::unique_lock<std::shared_mutex> lock(mtx);
         size_t index = pos - this->begin();
         if (this->_size == this->_capacity) this->grow();
         for (size_t i = this->_size - 1; i >= index; i--) {this->array[i + 1] = std::move(this->array[i]);}
@@ -125,6 +165,7 @@ public:
         return this->begin() + index;
     }
     iterator insert(iterator pos, T&& value) { // insert move
+        std::unique_lock<std::shared_mutex> lock(mtx);
         size_t index = pos - this->begin();
         if (this->_size == this->_capacity) this->grow();
         for (size_t i = this->_size - 1; i >= index; i--) {this->array[i + 1] = std::move(this->array[i]);}
@@ -133,6 +174,7 @@ public:
         return this->begin() + index;
     }
     iterator insert(iterator pos, size_t count, const T& value) { // insert multiple
+        std::unique_lock<std::shared_mutex> lock(mtx);
         size_t index = pos - this->begin();
         while (this->_size + count >= this->_capacity) {this->grow();}
         for (size_t i = this->_size - 1; i >= index; i--) {
@@ -144,12 +186,14 @@ public:
         return this->begin() + index;
     }
     iterator erase(iterator pos) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
         size_t index = pos - this->begin();
         for (size_t i = index; i < this->_size - 1; i++) {this->array[i] = std::move(this->array[i + 1]);}
         this->_size--;
         return this->begin() + index;
     }
     iterator erase(iterator first, iterator last) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
         size_t current = first - this->begin();
         size_t transfer = last - this->begin();
         size_t diff = transfer - current;
@@ -162,6 +206,10 @@ public:
         }
         this->_size -= diff;
         return this->begin() + returnIndex;
+    }
+    void execute_safely(std::function<void(T*,T*)> func) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
+        func(this->array, this->array + this->_size);
     }
 
     class iterator {
